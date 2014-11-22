@@ -28,7 +28,7 @@ from utils.ThreadPool import ThreadPool
 from nassl import SSL_OP_NO_TICKET
 from utils.SSLyzeSSLConnection import create_sslyze_connection
 
-
+import time
 class PluginSessionResumption(PluginBase.PluginBase):
 
     interface = PluginBase.PluginInterface(
@@ -47,6 +47,18 @@ class PluginSessionResumption(PluginBase.PluginBase):
             "Performs 100 session resumptions with the server(s), "
             "in order to estimate the session resumption rate."),
         aggressive=True)
+    interface.add_command(
+        command="resum_cache",
+        help=(
+            "Performs 100 session resumptions with the server(s), "
+            "in order to estimate the session timeout."),
+        aggressive=True)
+    interface.add_command(
+        command="resum_lifetime",
+        help=(
+            "Creates a few sessions and reuses them a lot to see how long "
+            "they live"),
+        aggressive=True)
 
 
     def process_task(self, target, command, args):
@@ -55,6 +67,10 @@ class PluginSessionResumption(PluginBase.PluginBase):
             result = self._command_resum(target)
         elif command == 'resum_rate':
             result = self._command_resum_rate(target)
+        elif command == 'resum_cache':
+            result = self._command_resum_cache(target)
+        elif command == 'resum_lifetime':
+            result = self._command_resum_lifetime(target)
         else:
             raise Exception("PluginSessionResumption: Unknown command.")
 
@@ -89,6 +105,66 @@ class PluginSessionResumption(PluginBase.PluginBase):
         thread_pool.join()
         return PluginBase.PluginResult(txt_result, xml_result)
 
+    def _command_resum_cache(self, target):
+        """
+        Performs 100 session resumptions with the server in order to estimate
+        the session resumption rate.
+        """
+        MAX_RESUM = 200
+        INTERVAL = 30
+
+        start = time.time()
+        sessions = []
+        for i in xrange(0, MAX_RESUM):
+            session = self._resume_ssl_session(target)
+            sessions.append(session)
+
+        last_ok = 0
+        for sess in sessions:
+            offset = time.time() - start
+            newsession = self._resume_ssl_session(target, sess)
+            received_session_id = self._extract_session_id(newsession)
+            old_session_id = self._extract_session_id(sess)
+
+            print "%5ds" % offset,
+            if received_session_id == old_session_id:
+                print "OK   ", old_session_id
+                last_ok = offset
+            else:
+                print "Error - last ok was %ds" % last_ok
+
+            time.sleep(INTERVAL)
+
+    def _command_resum_lifetime(self, target):
+        """
+        Test how long the sessions live
+        """
+        MAX_RESUM = 3
+        INTERVAL = 1
+
+        start = time.time()
+        sessions = []
+        for i in xrange(0, MAX_RESUM):
+            session = self._resume_ssl_session(target)
+            received_session_id = self._extract_session_id(session)
+            print "New session", received_session_id
+            sessions.append(session)
+
+        while len(sessions) > 0:
+            time.sleep(INTERVAL)
+            offset = time.time() - start
+            aliveSessions = []
+            for sess in sessions:
+                newsession = self._resume_ssl_session(target, sess)
+                received_session_id = self._extract_session_id(newsession)
+                old_session_id = self._extract_session_id(sess)
+
+                if received_session_id != old_session_id:
+                    print "Session %s died after %d seconds" % (old_session_id, offset)
+                else:
+                    aliveSessions.append(newsession)
+
+            print "After %4d seconds: %d alive" % (offset, len(aliveSessions))
 
     def _command_resum(self, target):
         """
